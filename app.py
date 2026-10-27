@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -55,25 +56,53 @@ def get_dashboard_kpis():
 
 
 # --------------------------------------------------
-# Better Visualization Logic
+# Visualization Function
 # --------------------------------------------------
 
 def create_visualization(df):
 
-    # Need at least two columns
-    if len(df.columns) < 2:
+    if df.empty or len(df.columns) < 2 or len(df) == 1:
         return None
 
-    # Need at least one row
-    if df.empty:
-        return None
-
-    # Single-row result does not need a chart
-    if len(df) == 1:
-        return None
-
+    df = df.copy()
     columns = df.columns.tolist()
 
+    # --------------------------------------------------
+    # Find Date Column First
+    # --------------------------------------------------
+
+    date_column = None
+
+    for column in columns:
+
+        is_likely_date = (
+            column.lower() in [
+                "date",
+                "month",
+                "year",
+                "timestamp",
+                "order_date",
+                "order_month"
+            ]
+            or "date" in column.lower()
+            or "timestamp" in column.lower()
+            or column.lower().endswith("_month")
+        )
+
+        if (
+            pd.api.types.is_datetime64_any_dtype(df[column])
+            or is_likely_date
+        ):
+
+            converted_dates = pd.to_datetime(
+                df[column],
+                errors="coerce"
+            )
+
+            if converted_dates.notna().all():
+                date_column = column
+                df[column] = converted_dates
+                break
 
     # --------------------------------------------------
     # Find Numeric Columns
@@ -83,89 +112,85 @@ def create_visualization(df):
 
     for column in columns:
 
+        if column == date_column:
+            continue
+
         converted = pd.to_numeric(
             df[column],
             errors="coerce"
         )
 
         if converted.notna().any():
-
+            df[column] = converted
             numeric_columns.append(column)
 
-
-    # No numeric columns
     if not numeric_columns:
         return None
 
-
     # --------------------------------------------------
-    # Find Date Column
-    # --------------------------------------------------
-
-    date_column = None
-
-    for column in columns:
-
-        converted_dates = pd.to_datetime(
-            df[column],
-            errors="coerce"
-        )
-
-        if converted_dates.notna().all():
-
-            date_column = column
-
-            df[column] = converted_dates
-
-            break
-
-
-    # --------------------------------------------------
-    # Time Series → Line Chart
+    # Time Series -> Line Chart
     # --------------------------------------------------
 
     if date_column is not None:
 
-        value_column = None
-
-        for column in numeric_columns:
-
-            if column != date_column:
-
-                value_column = column
-
-                break
+        value_column = next(
+            (
+                column
+                for column in numeric_columns
+                if column != date_column
+            ),
+            None
+        )
 
         if value_column is not None:
 
-            df[value_column] = pd.to_numeric(
-                df[value_column],
-                errors="coerce"
+            df = df.dropna(
+                subset=[date_column, value_column]
             )
 
-            return px.line(
-                df,
-                x=date_column,
-                y=value_column,
-                title=f"{value_column} over time",
-                markers=True
+            df = df.sort_values(
+                by=date_column
             )
 
+            if not df.empty:
+
+                fig = px.line(
+                    df,
+                    x=date_column,
+                    y=value_column,
+                    title="Monthly Payment Revenue Trend",
+                    markers=True,
+                    labels={
+                        date_column: "Month",
+                        value_column: "Revenue"
+                    }
+                )
+
+                fig.update_layout(
+                    xaxis_title="Month",
+                    yaxis_title="Revenue",
+                    title_x=0.02
+                )
+
+                fig.update_traces(
+                    connectgaps=False
+                )
+
+                return fig
 
     # --------------------------------------------------
     # Find Category Column
     # --------------------------------------------------
 
-    category_column = None
-
-    for column in columns:
-
-        if column not in numeric_columns:
-
-            category_column = column
-
-            break
-
+    category_column = next(
+        (
+            column
+            for column in columns
+            if column not in numeric_columns
+            and column != date_column
+        ),
+        None
+    )
 
     # --------------------------------------------------
     # Category + Numeric
@@ -175,13 +200,6 @@ def create_visualization(df):
 
         value_column = numeric_columns[0]
 
-        df[value_column] = pd.to_numeric(
-            df[value_column],
-            errors="coerce"
-        )
-
-
-        # Small number of categories → Pie Chart
         if len(df) <= 6:
 
             return px.pie(
@@ -191,8 +209,6 @@ def create_visualization(df):
                 title=f"{value_column} by {category_column}"
             )
 
-
-        # Larger number of categories → Bar Chart
         return px.bar(
             df,
             x=category_column,
@@ -200,9 +216,8 @@ def create_visualization(df):
             title=f"{value_column} by {category_column}"
         )
 
-
     # --------------------------------------------------
-    # Multiple Numeric Columns → Bar Chart
+    # Multiple Numeric Columns -> Bar Chart
     # --------------------------------------------------
 
     if len(numeric_columns) >= 2:
@@ -213,11 +228,6 @@ def create_visualization(df):
             y=numeric_columns[:3],
             title="Business Metrics"
         )
-
-
-    # --------------------------------------------------
-    # No Suitable Visualization
-    # --------------------------------------------------
 
     return None
 
@@ -245,11 +255,7 @@ def is_valid_business_question(question):
 
     cleaned_question = question.strip().lower()
 
-    if cleaned_question in vague_questions:
-
-        return False
-
-    return True
+    return cleaned_question not in vague_questions
 
 
 # --------------------------------------------------
@@ -294,16 +300,9 @@ with st.sidebar:
             example,
             use_container_width=True
         ):
-
             st.session_state.selected_question = example
 
-
     st.divider()
-
-
-    # --------------------------------------------------
-    # Clear Conversation
-    # --------------------------------------------------
 
     if st.button(
         "🗑️ Clear Conversation",
@@ -318,12 +317,9 @@ with st.sidebar:
 
         st.rerun()
 
-
     st.divider()
 
-    st.caption(
-        "AI Business Analyst Assistant"
-    )
+    st.caption("AI Business Analyst Assistant")
 
     st.caption(
         "PostgreSQL • Gemini • LangChain • Pandas • Plotly"
@@ -334,9 +330,7 @@ with st.sidebar:
 # Main Page
 # --------------------------------------------------
 
-st.title(
-    "AI Business Analyst Assistant"
-)
+st.title("AI Business Analyst Assistant")
 
 st.write(
     "Ask a business question and get AI-generated SQL, "
@@ -357,41 +351,31 @@ try:
         average_order_value
     ) = get_dashboard_kpis()
 
-
     col1, col2, col3, col4 = st.columns(4)
 
-
     with col1:
-
         st.metric(
             "Total Orders",
             f"{total_orders:,}"
         )
 
-
     with col2:
-
         st.metric(
             "Total Customers",
             f"{total_customers:,}"
         )
 
-
     with col3:
-
         st.metric(
             "Revenue",
             f"{float(total_revenue):,.2f}"
         )
 
-
     with col4:
-
         st.metric(
             "Average Order Value",
             f"{float(average_order_value):,.2f}"
         )
-
 
 except Exception as error:
 
@@ -409,7 +393,6 @@ st.divider()
 
 @st.cache_resource
 def load_schema():
-
     return get_schema_context()
 
 
@@ -426,11 +409,8 @@ if "conversation" not in st.session_state:
         max_history=5
     )
 
-
 if "selected_question" not in st.session_state:
-
     st.session_state.selected_question = ""
-
 
 conversation = st.session_state.conversation
 
@@ -455,20 +435,11 @@ if st.button(
     type="primary"
 ):
 
-    # ----------------------------------------------
-    # Empty Question
-    # ----------------------------------------------
-
     if not question.strip():
 
         st.warning(
             "Please enter a business question."
         )
-
-
-    # ----------------------------------------------
-    # Vague / Unclear Question
-    # ----------------------------------------------
 
     elif not is_valid_business_question(question):
 
@@ -477,16 +448,9 @@ if st.button(
             "about the e-commerce data."
         )
 
-
-    # ----------------------------------------------
-    # Valid Business Question
-    # ----------------------------------------------
-
     else:
 
-        with st.spinner(
-            "Analyzing your question..."
-        ):
+        with st.spinner("Analyzing your question..."):
 
             try:
 
@@ -496,24 +460,11 @@ if st.button(
                     conversation
                 )
 
-
-                # --------------------------------------
                 # Business Question
-                # --------------------------------------
+                st.subheader("📝 Business Question")
+                st.info(result["question"])
 
-                st.subheader(
-                    "📝 Business Question"
-                )
-
-                st.info(
-                    result["question"]
-                )
-
-
-                # --------------------------------------
                 # Generated SQL
-                # --------------------------------------
-
                 with st.expander(
                     "🔹 View Generated SQL",
                     expanded=False
@@ -524,20 +475,11 @@ if st.button(
                         language="sql"
                     )
 
-
-                # --------------------------------------
-                # Convert Result to DataFrame
-                # --------------------------------------
-
+                # Query Result
                 df = pd.DataFrame(
                     result["rows"],
                     columns=result["columns"]
                 )
-
-
-                # --------------------------------------
-                # Query Result
-                # --------------------------------------
 
                 with st.expander(
                     "📋 View Query Result",
@@ -557,15 +499,10 @@ if st.button(
                             "No data was found for this question."
                         )
 
-
-                # --------------------------------------
                 # Visualization
-                # --------------------------------------
-
                 if not df.empty:
 
                     fig = create_visualization(df)
-
 
                     if fig is not None:
 
@@ -586,35 +523,19 @@ if st.button(
                             "is not needed for this result."
                         )
 
-
-                # --------------------------------------
                 # Business Insight
-                # --------------------------------------
-
                 with st.expander(
                     "💡 Business Insight",
                     expanded=True
                 ):
 
-                    st.write(
-                        result["explanation"]
-                    )
-
-
-            # ------------------------------------------
-            # SQL Validation Error
-            # ------------------------------------------
+                    st.write(result["explanation"])
 
             except ValueError as error:
 
                 st.error(
                     f"SQL Validation Error: {error}"
                 )
-
-
-            # ------------------------------------------
-            # Other Application Errors
-            # ------------------------------------------
 
             except Exception as error:
 
